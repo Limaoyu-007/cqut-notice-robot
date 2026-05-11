@@ -4,6 +4,7 @@ import logging
 import os
 import time
 from dataclasses import asdict
+from datetime import date
 
 import schedule
 
@@ -14,6 +15,7 @@ from config import (
     AI_ENABLED,
     AI_MODEL,
     BROWSER_PATH,
+    DRY_RUN,
     ERROR_ALERT_ENABLED,
     LOG_PATH,
     NOTICE_LIST_URLS,
@@ -23,11 +25,14 @@ from config import (
     USER_PROFILE,
 )
 from crawler import NoticeCrawler
+from daily_digest import format_daily_digest
 from db import DBManager
 from error_notifier import notify_error
+from keyword_classifier import classify_notice_by_keywords
 from logger_setup import setup_logging
-from notifier import format_notice_messages, send_feishu_message
+from notifier import format_notice_messages, send_feishu_message, send_feishu_text
 from parser import parse_notice_detail_info, parse_notices
+from push_policy import DeliveryStyle, decide_delivery_style
 
 
 logger = logging.getLogger("notice_robot")
@@ -88,24 +93,45 @@ def _analyze_notice_with_config(notice):
 
 
 def attach_ai_analysis(notice, db, analyze_func, ai_enabled: bool = True) -> None:
-    if not ai_enabled:
-        return
+    if ai_enabled:
+        cached_notice = db.get_by_url(notice.url)
+        if cached_notice and cached_notice.ai_analysis:
+            notice.ai_analysis = cached_notice.ai_analysis
+            logger.info("Reused cached AI analysis: %s", notice.title)
+            return
 
-    cached_notice = db.get_by_url(notice.url)
-    if cached_notice and cached_notice.ai_analysis:
-        notice.ai_analysis = cached_notice.ai_analysis
-        logger.info("Reused cached AI analysis: %s", notice.title)
-        return
+        notice.ai_analysis = analyze_func(notice)
 
-    notice.ai_analysis = analyze_func(notice)
+    if not notice.ai_analysis:
+        notice.ai_analysis = classify_notice_by_keywords(notice)
+        if notice.ai_analysis:
+            logger.info("Applied keyword fallback analysis: %s", notice.title)
 
 
-def deliver_notice(notice, dry_run: bool = False, send_func=send_feishu_message, preview_func=preview_notice) -> bool:
+def deliver_notice(
+    notice,
+    dry_run: bool = False,
+    delivery_style: DeliveryStyle | None = None,
+    send_func=send_feishu_message,
+    preview_func=preview_notice,
+) -> bool:
+    selected_style = delivery_style or decide_delivery_style(notice)
+
+    if selected_style == DeliveryStyle.DIGEST_ONLY:
+        logger.info("Notice stored for digest only: %s", notice.title)
+        return True
+
     if dry_run:
         preview_func(notice)
         return True
 
-    ok = send_func(notice)
+    style_arg = None
+    if selected_style == DeliveryStyle.BRIEF:
+        style_arg = "brief"
+    elif selected_style == DeliveryStyle.DETAILED:
+        style_arg = "detailed"
+
+    ok = send_func(notice, style=style_arg)
     if not ok:
         logger.error("Notice delivery failed: %s", notice.title)
     return ok
@@ -125,6 +151,10 @@ def hydrate_notice_detail(notice, crawler) -> None:
         notice.publish_time = detail.publish_time
     notice.content = detail.content
     notice.attachments = detail.attachments
+
+
+def resolve_dry_run(cli_dry_run: bool, env_dry_run: bool = DRY_RUN) -> bool:
+    return cli_dry_run or env_dry_run
 
 
 def job(dry_run: bool = False):
@@ -152,11 +182,12 @@ def job(dry_run: bool = False):
             logger.info("[%s/%s] Fetching detail: %s", index, len(notices), notice.title)
             hydrate_notice_detail(notice, crawler)
             attach_ai_analysis(notice, db, _analyze_notice_with_config, AI_ENABLED)
+            delivery_style = decide_delivery_style(notice)
 
             if not dry_run:
                 db.insert(notice)
 
-            if not deliver_notice(notice, dry_run=dry_run) and ERROR_ALERT_ENABLED:
+            if not deliver_notice(notice, dry_run=dry_run, delivery_style=delivery_style) and ERROR_ALERT_ENABLED:
                 notify_error("飞书推送", f"通知推送失败：{notice.title}", dry_run=dry_run)
 
             logger.info("Notice processed. time=%s url=%s", notice.publish_time, notice.url)
@@ -174,6 +205,21 @@ def job(dry_run: bool = False):
         db.close()
 
 
+def send_daily_digest(
+    date_text: str | None = None,
+    db_factory=DBManager,
+    send_text_func=send_feishu_text,
+) -> bool:
+    selected_date = date_text or date.today().isoformat()
+    db = db_factory("data/notices.db")
+    try:
+        notices = db.get_by_publish_date(selected_date)
+        message = format_daily_digest(notices, selected_date)
+        return send_text_func(message)
+    finally:
+        db.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description="CQUT notice robot")
     parser.add_argument(
@@ -182,15 +228,17 @@ def main():
         help="preview messages without sending Feishu notifications or writing new notices",
     )
     args = parser.parse_args()
+    dry_run = resolve_dry_run(args.dry_run)
 
     setup_logging(LOG_PATH)
     logger.info("Start scheduled task, every %s minutes.", SCHEDULE_INTERVAL_MINUTES)
-    job(dry_run=args.dry_run)
+    job(dry_run=dry_run)
 
-    if args.dry_run:
+    if dry_run:
         return
 
     schedule.every(SCHEDULE_INTERVAL_MINUTES).minutes.do(job)
+    schedule.every().day.at("22:00").do(send_daily_digest)
     while True:
         schedule.run_pending()
         time.sleep(1)

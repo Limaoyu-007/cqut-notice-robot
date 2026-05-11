@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -40,6 +41,15 @@ def _get_list(name: str, default: list[str]) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def load_user_profile(path: str | Path) -> dict:
+    profile_path = Path(path)
+    with profile_path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError("User profile JSON must be an object")
+    return data
+
+
 _load_env_file(Path(__file__).with_name(".env"))
 
 DEFAULT_NOTICE_LIST_URLS = [
@@ -69,13 +79,14 @@ SCHEDULE_INTERVAL_MINUTES = _get_int("SCHEDULE_INTERVAL_MINUTES", 10)
 
 LOG_PATH = os.getenv("NOTICE_ROBOT_LOG_PATH", "logs/notice_robot.log")
 ERROR_ALERT_ENABLED = os.getenv("ERROR_ALERT_ENABLED", "1") != "0"
+DRY_RUN = _get_bool("DRY_RUN", False)
 
 AI_API_KEY = os.getenv("AI_API_KEY", "")
 AI_API_BASE_URL = os.getenv("AI_API_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
 AI_MODEL = os.getenv("AI_MODEL", "deepseek-v4-flash")
 AI_ENABLED = _get_bool("AI_ENABLED", True)
 
-USER_PROFILE = {
+DEFAULT_USER_PROFILE = {
     "identity": "重庆理工大学计算机科学与技术专业本科生",
     "stage": "大二下",
     "career_direction": [
@@ -106,3 +117,6 @@ USER_PROFILE = {
     },
     "analysis_preference": "优先判断这条通知是否值得用户现在停下来查看。高重要需要说明价值点和行动建议；中重要简短提醒关键信息；低重要说明为什么不值得打扰。当前阶段只优化 AI 判断，不改变现有推送流程。",
 }
+
+USER_PROFILE_PATH = os.getenv("USER_PROFILE_PATH", "")
+USER_PROFILE = load_user_profile(USER_PROFILE_PATH) if USER_PROFILE_PATH else DEFAULT_USER_PROFILE

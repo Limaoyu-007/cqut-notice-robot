@@ -131,12 +131,35 @@ def _format_original_notice(notice: Notice) -> str:
     )
 
 
-def format_notice_messages(notice: Notice, max_chars: int = 3500) -> list[str]:
-    full_message = (
-        _format_ai_card(notice, notice.ai_analysis)
-        if notice.ai_analysis
-        else _format_original_notice(notice)
+def _format_brief_ai_card(notice: Notice, analysis: AIAnalysis) -> str:
+    title = analysis.clean_title or notice.title
+    publish_time = analysis.clean_publish_time or notice.publish_time or "未明确"
+    recommended_action = analysis.recommended_action or analysis.action_required or "查看原文确认完整要求。"
+    key_points = _numbered_lines(analysis.key_points, "打开原文核对对象、时间、材料和附件要求。")
+
+    return "\n".join(
+        [
+            f"📌 【{_label_level(analysis.importance)}重要】{title}",
+            f"相关度：{analysis.personal_relevance}/100",
+            f"发布时间：{publish_time}",
+            f"建议：{recommended_action}",
+            "",
+            "重点：",
+            key_points,
+            "",
+            f"原文：{notice.url}",
+        ]
     )
+
+
+def format_notice_messages(notice: Notice, max_chars: int = 3500, style: str | None = None) -> list[str]:
+    if notice.ai_analysis and style == "brief":
+        full_message = _format_brief_ai_card(notice, notice.ai_analysis)
+    elif notice.ai_analysis:
+        full_message = _format_ai_card(notice, notice.ai_analysis)
+    else:
+        full_message = _format_original_notice(notice)
+
     if len(full_message) <= max_chars:
         return [full_message]
 
@@ -148,7 +171,7 @@ def format_notice_messages(notice: Notice, max_chars: int = 3500) -> list[str]:
     return messages
 
 
-def send_feishu_message(notice: Notice) -> bool:
+def send_feishu_message(notice: Notice, style: str | None = None) -> bool:
     if not FEISHU_WEBHOOK_URL or "xxxxxxxx" in FEISHU_WEBHOOK_URL:
         logger.warning("Feishu webhook is not configured; skipped sending.")
         return False
@@ -156,7 +179,7 @@ def send_feishu_message(notice: Notice) -> bool:
     headers = {"Content-Type": "application/json"}
 
     try:
-        for message in format_notice_messages(notice):
+        for message in format_notice_messages(notice, style=style):
             payload = {
                 "msg_type": "text",
                 "content": {"text": message},
@@ -175,3 +198,27 @@ def send_feishu_message(notice: Notice) -> bool:
         logger.exception("Feishu send exception: %s", e)
 
     return False
+
+
+def send_feishu_text(message: str) -> bool:
+    if not FEISHU_WEBHOOK_URL or "xxxxxxxx" in FEISHU_WEBHOOK_URL:
+        logger.warning("Feishu webhook is not configured; skipped sending.")
+        return False
+
+    payload = {
+        "msg_type": "text",
+        "content": {"text": message},
+    }
+    try:
+        response = requests.post(FEISHU_WEBHOOK_URL, json=payload, timeout=10)
+        if response.status_code != 200:
+            logger.error("Feishu text request failed, status=%s", response.status_code)
+            return False
+        result = response.json()
+        if result.get("code") != 0:
+            logger.error("Feishu text send failed: %s", result.get("msg"))
+            return False
+        return True
+    except Exception as e:
+        logger.exception("Feishu text send exception: %s", e)
+        return False

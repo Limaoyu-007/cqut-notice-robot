@@ -1,4 +1,5 @@
 import os
+import importlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -47,6 +48,34 @@ class ConfigSecurityTests(unittest.TestCase):
                         os.environ.pop(key, None)
                     else:
                         os.environ[key] = value
+
+    def test_dry_run_can_be_enabled_from_environment(self):
+        original = os.environ.get("DRY_RUN")
+        try:
+            os.environ["DRY_RUN"] = "true"
+            reloaded_config = importlib.reload(config)
+
+            self.assertTrue(reloaded_config.DRY_RUN)
+        finally:
+            if original is None:
+                os.environ.pop("DRY_RUN", None)
+            else:
+                os.environ["DRY_RUN"] = original
+            importlib.reload(config)
+
+    def test_load_user_profile_from_json_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile_path = Path(temp_dir) / "profile.json"
+            profile_path.write_text(
+                '{"identity": "测试学生", "stage": "大三", "career_direction": ["后端开发"]}',
+                encoding="utf-8",
+            )
+
+            profile = config.load_user_profile(profile_path)
+
+        self.assertEqual(profile["identity"], "测试学生")
+        self.assertEqual(profile["stage"], "大三")
+        self.assertEqual(profile["career_direction"], ["后端开发"])
 
 
 if __name__ == "__main__":

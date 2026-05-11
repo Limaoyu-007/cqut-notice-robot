@@ -74,6 +74,20 @@ class DBManager:
         rows = cursor.fetchall()
         return [self._row_to_notice(row) for row in rows]
 
+    def get_by_publish_date(self, publish_date: str) -> list[Notice]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT title, url, publish_time, department, raw_text, content, attachments, ai_analysis
+            FROM notices
+            WHERE publish_time = ?
+            ORDER BY id DESC
+            """,
+            (publish_date,),
+        )
+        rows = cursor.fetchall()
+        return [self._row_to_notice(row) for row in rows]
+
     def _row_to_notice(self, row) -> Notice:
         return Notice(
             title=row[0],

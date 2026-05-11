@@ -159,6 +159,35 @@ class FeishuMessageFormattingTests(unittest.TestCase):
         self.assertNotIn("这是 AI 整理后的通知正文", message)
         self.assertNotIn("官方正文原文", message)
 
+    def test_format_notice_messages_supports_brief_ai_notice_card(self):
+        notice = Notice(
+            title="关于举办职业规划讲座的通知",
+            url="https://www.cqut.edu.cn/info/1103/brief.htm",
+            publish_time="2026-05-11",
+            department="学生处",
+            ai_analysis=AIAnalysis(
+                importance="medium",
+                personal_relevance=62,
+                clean_title="关于举办职业规划讲座的通知",
+                clean_publish_time="2026-05-11",
+                category="就业指导",
+                reason="和学生职业规划有关，但不是当前最核心目标。",
+                recommended_action="有时间可以查看原文了解报名方式。",
+                key_points=["讲座面向在校学生", "需要关注报名时间"],
+                recommended_push_style="brief",
+            ),
+        )
+
+        [message] = format_notice_messages(notice, style="brief", max_chars=4000)
+
+        self.assertTrue(message.startswith("📌 【中重要】关于举办职业规划讲座的通知"))
+        self.assertIn("相关度：62/100", message)
+        self.assertIn("建议：有时间可以查看原文了解报名方式。", message)
+        self.assertIn("1. 讲座面向在校学生", message)
+        self.assertIn("原文：https://www.cqut.edu.cn/info/1103/brief.htm", message)
+        self.assertNotIn("主要内容", message)
+        self.assertNotIn("关键时间", message)
+
 
 class NoticeDatabaseTests(unittest.TestCase):
     def test_db_round_trips_attachments(self):
